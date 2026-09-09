@@ -1,0 +1,20 @@
+services:
+  iptv-proxy:
+    build:
+      context: .
+      args:
+        INSTALL_FFMPEG: "${INSTALL_FFMPEG:-false}"
+    image: iptv-proxy:local
+    container_name: iptv-proxy
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${IPTV_PORT:-19899}:${IPTV_PORT:-19899}/tcp"
+    environment:
+      IPTV_PORT: "${IPTV_PORT:-19899}"
+      IPTV_PANEL_USERNAME: "${IPTV_PANEL_USERNAME:-admin}"
+      IPTV_PANEL_PASSWORD: "${IPTV_PANEL_PASSWORD:-admin}"
+      IPTV_TIMEZONE_OFFSET_HOURS: "${IPTV_TIMEZONE_OFFSET_HOURS:-8}"
+      TZ: "${TZ:-Asia/Taipei}"
+    volumes:
+      - ./data:/data

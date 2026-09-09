@@ -28,6 +28,41 @@ bash <(curl -fsSL https://raw.githubusercontent.com/YanG-1989/rust/main/IPTV%20P
 
 装完二进制不会覆盖已有的 `config.toml`，所以**更新版本直接再跑一次选 `1`**，频道和设置都不会丢。
 
+## 🐳 Docker
+
+支援 `linux/amd64`、`linux/arm64`、`linux/arm/v7`。映像建置時會依目標平台選擇二進位檔，並核對固定的 SHA-256。
+
+```bash
+cd "IPTV Proxy"
+cp .env.example .env
+# 編輯 .env，至少更改 IPTV_PANEL_PASSWORD
+docker compose up -d --build
+```
+
+面板位址為 `http://伺服器IP:19899/panel`。設定、快取、EPG 與錄製資料保存在 `./data`；容器重建不會覆寫已存在的 `data/config.toml`。環境變數只用於首次產生設定，後續請從面板修改，或先停止容器再編輯該檔。
+
+### 使用外部 `cf-net`
+
+先確認外部網路已存在，再載入覆寫檔：
+
+```bash
+docker network inspect cf-net >/dev/null
+docker compose -f compose.yaml -f compose.cf-net.yaml up -d --build
+```
+
+此模式會讓容器同時加入 Compose 預設網路與既有的 `cf-net`，方便同一網路內的 Cloudflare Tunnel 容器連到 `http://iptv-proxy:19899`。若不想直接公開主機連接埠，可從 `compose.yaml` 移除 `ports`；Cloudflare Tunnel 仍可經 `cf-net` 存取服務。
+
+常用命令：
+
+```bash
+docker compose logs -f iptv-proxy
+docker compose restart iptv-proxy
+docker compose down                    # 保留 ./data
+docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 .
+```
+
+> 映像預設不含 ffmpeg；這不影響代理功能，但「視頻素材」轉碼及錄製合成不可用。如需 ffmpeg，將 `.env` 的 `INSTALL_FFMPEG` 改為 `true` 後重新建置。
+
 ## 🎛️ 面板
 
 地址 `http://服务器IP:19899/panel`，账号 `admin` / `admin`（**请尽快改**）。
