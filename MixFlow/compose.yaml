@@ -1,0 +1,30 @@
+services:
+  mixflow:
+    build:
+      context: .
+    image: mixflow:local
+    container_name: mixflow
+    restart: unless-stopped
+    init: true
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "${MIXFLOW_PANEL_PORT:-12321}:${MIXFLOW_PANEL_PORT:-12321}/tcp"
+    environment:
+      MIXFLOW_PANEL_PORT: "${MIXFLOW_PANEL_PORT:-12321}"
+      MIXFLOW_PANEL_ADDR: "${MIXFLOW_PANEL_ADDR:-::}"
+      MIXFLOW_PANEL_USERNAME: "${MIXFLOW_PANEL_USERNAME:-admin}"
+      MIXFLOW_PANEL_PASSWORD: "${MIXFLOW_PANEL_PASSWORD:-admin123}"
+      MIXFLOW_PANEL_PATH: "${MIXFLOW_PANEL_PATH:-off}"
+      TZ: "${TZ:-Asia/Taipei}"
+    volumes:
+      - ./data:/data
+    sysctls:
+      net.ipv4.ip_forward: "1"
+
+# Proxy node ports are created dynamically in the Web panel. Publish each
+# configured TCP/UDP node port under services.mixflow.ports, for example:
+#   - "443:443/tcp"   # Trojan
+#   - "8443:8443/udp" # Hysteria2

@@ -1,0 +1,7 @@
+.git
+data
+.env
+tests
+README.md
+mixflow.sh
+compose*.yaml
