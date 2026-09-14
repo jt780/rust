@@ -1,0 +1,7 @@
+# Only the executable and container scripts enter the build context.
+**
+!Dockerfile
+!docker-entrypoint.sh
+!docker-healthcheck.sh
+!docker-common.sh
+!4gtv-linux-amd64

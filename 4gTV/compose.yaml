@@ -1,0 +1,30 @@
+services:
+  4gtv:
+    build:
+      context: .
+    image: 4gtv:local
+    platform: linux/amd64
+    restart: unless-stopped
+    init: true
+    user: "${FOURGTV_UID:-1001}:${FOURGTV_GID:-1001}"
+    stop_grace_period: 10s
+    ports:
+      - "${FOURGTV_BIND:-127.0.0.1}:${FOURGTV_PORT:-18080}:${PORT:-8080}/tcp"
+    environment:
+      PORT: "${PORT:-8080}"
+      BASE_PATH: "${BASE_PATH:-}"
+      TZ: "${TZ:-Asia/Taipei}"
+    volumes:
+      - "${FOURGTV_DATA_DIR:-./data}:/data"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"

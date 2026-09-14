@@ -1,0 +1,11 @@
+# Optional: docker compose -f compose.yaml -f compose.cf-net.yaml up -d --build
+services:
+  4gtv:
+    networks:
+      - default
+      - cf-net
+
+networks:
+  cf-net:
+    external: true
+    name: cf-net

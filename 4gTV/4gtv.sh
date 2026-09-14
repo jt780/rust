@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
 #
-#  4GTV 公开版 · 一键安装 / 管理脚本
+#  4GTV 公开版 · 一键安装 / 管理脚本 (含 Alpine OpenRC 支持)
 #  --------------------------------------------------------------------
 #  · 自动识别 CPU 架构 (amd64 / arm64 / armv7)，下载预编译二进制
-#  · 安装到 /opt/4gtv，systemd 常驻 + 开机自启
-#  · 支持自定义端口（PORT）与隐藏路径前缀（BASE_PATH），降低被扫到的风险
+#  · 支持 systemd (Ubuntu/Debian/CentOS) 与 OpenRC (Alpine) 开机自启
+#  · 支持自定义端口（PORT）与隐藏路径前缀（BASE_PATH）
 #
+
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.1"
 APP_NAME="4gtv"
 APP_DIR="/opt/4gtv"
 BIN="$APP_DIR/4gtv"
 SERVICE_NAME="4gtv"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+OPENRC_FILE="/etc/init.d/${SERVICE_NAME}"
 ENV_FILE="$APP_DIR/env"
 MARK="# managed-by: 4gtv.sh"
 
-# ★ 下载地址（按架构替换 {arch}：amd64 / arm64 / armv7）
-# 示例 Release 资产名：4gtv-linux-amd64 / 4gtv-linux-arm64 / 4gtv-linux-armv7
-# 公开版：无模式4 / 无诊断页；保留代理设置与完整取流逻辑；默认随机端口+隐藏路径
 DOWNLOAD_URL="${FOURGTV_PUBLIC_URL:-https://raw.githubusercontent.com/YanG-1989/rust/main/4gTV/4gtv-linux-{arch}}"
 SELF_URL="${FOURGTV_PUBLIC_SELF_URL:-https://raw.githubusercontent.com/YanG-1989/rust/main/4gTV/4gtv.sh}"
 
@@ -76,7 +75,6 @@ rand_path() {
     echo "/$(od -An -tx1 -N5 /dev/urandom 2>/dev/null | tr -d ' \n')"
 }
 
-# 随机高位端口（10000–60000），避开常见服务
 rand_port() {
     local n
     n="$(od -An -tu2 -N2 /dev/urandom 2>/dev/null | tr -d ' \n')"
@@ -84,13 +82,48 @@ rand_port() {
     echo "$n"
 }
 
+# ---- 服务抽象层：支持 systemd 与 OpenRC ----
 has_systemd() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
+has_openrc()  { command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; }
+
+svc_managed() {
+    { has_systemd && [ -f "$SERVICE_FILE" ]; } || { has_openrc && [ -f "$OPENRC_FILE" ]; }
+}
+
+svc_write_and_enable() {
+    if has_systemd; then
+        write_service
+        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+    elif has_openrc; then
+        write_openrc
+        rc-update add "$SERVICE_NAME" default >/dev/null 2>&1
+    fi
+}
+
+svc_do() { # action
+    if has_systemd && [ -f "$SERVICE_FILE" ]; then
+        systemctl "$1" "$SERVICE_NAME"
+    elif has_openrc && [ -f "$OPENRC_FILE" ]; then
+        rc-service "$SERVICE_NAME" "$1"
+    else
+        return 2
+    fi
+}
+
+svc_active() {
+    if has_systemd && [ -f "$SERVICE_FILE" ]; then
+        systemctl is-active --quiet "$SERVICE_NAME"
+    elif has_openrc && [ -f "$OPENRC_FILE" ]; then
+        rc-service "$SERVICE_NAME" status >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
 
 load_env() {
     PORT=""
     BASE_PATH=""
     [ -f "$ENV_FILE" ] && . "$ENV_FILE" || true
-    # 未安装时不写死端口；展示/启动时再兜底
     PORT="${PORT:-}"
     BASE_PATH="${BASE_PATH:-}"
 }
@@ -122,8 +155,8 @@ ExecStart=${BIN}
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576
-StandardOutput=journal
-StandardError=journal
+StandardOutput=null
+StandardError=null
 SyslogIdentifier=${SERVICE_NAME}
 
 [Install]
@@ -131,6 +164,37 @@ WantedBy=multi-user.target
 EOF
     chmod 644 "$SERVICE_FILE"
     systemctl daemon-reload
+}
+
+write_openrc() {
+    step "写入 $OPENRC_FILE"
+    cat > "$OPENRC_FILE" <<EOF
+#!/sbin/openrc-run
+${MARK}
+description="4GTV public stream proxy"
+supervisor="supervise-daemon"
+command="${BIN}"
+directory="${APP_DIR}"
+pidfile="/run/${SERVICE_NAME}.pid"
+respawn_delay=3
+rc_ulimit="-n 1048576"
+output_log="/dev/null"
+error_log="/dev/null"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    if [ -f "${ENV_FILE}" ]; then
+        set -o allexport
+        . "${ENV_FILE}"
+        set +o allexport
+    fi
+}
+EOF
+    chmod 755 "$OPENRC_FILE"
 }
 
 download_binary() {
@@ -160,12 +224,25 @@ show_url() {
     path="${path%/}"
     echo -e "${BLU}访问地址：${NC}"
     if [ -n "$path" ]; then
-        echo -e "  播放器  ${GRN}http://${ip}:${port}${path}/player${NC}"
-        echo -e "  管理面板  ${GRN}http://${ip}:${port}${path}/admin?key=<见 ${APP_DIR}/4gtv_admin_key.txt>${NC}"
+        # 首页去掉了末尾多余的 /
+        echo -e "  首页      ${GRN}http://${ip}:${port}${path}${NC}"
+        echo -e "  播放器    ${GRN}http://${ip}:${port}${path}/player${NC}"
+        if [ -f "$APP_DIR/4gtv_admin_key.txt" ]; then
+            local admin_key; admin_key="$(cat "$APP_DIR/4gtv_admin_key.txt")"
+            echo -e "  管理面板  ${GRN}http://${ip}:${port}${path}/admin?key=${admin_key}${NC}"
+        else
+            echo -e "  管理面板  ${GRN}http://${ip}:${port}${path}/admin${NC}"
+        fi
         echo -e "  ${DIM}（隐藏路径：不带 ${path} 前缀访问会 404）${NC}"
     else
-        echo -e "  播放器  ${GRN}http://${ip}:${port}/player${NC}"
-        echo -e "  管理面板  ${GRN}http://${ip}:${port}/admin?key=<见 ${APP_DIR}/4gtv_admin_key.txt>${NC}"
+        echo -e "  首页      ${GRN}http://${ip}:${port}/${NC}"
+        echo -e "  播放器    ${GRN}http://${ip}:${port}/player${NC}"
+        if [ -f "$APP_DIR/4gtv_admin_key.txt" ]; then
+            local admin_key; admin_key="$(cat "$APP_DIR/4gtv_admin_key.txt")"
+            echo -e "  管理面板  ${GRN}http://${ip}:${port}/admin?key=${admin_key}${NC}"
+        else
+            echo -e "  管理面板  ${GRN}http://${ip}:${port}/admin${NC}"
+        fi
         warn "未设置 BASE_PATH，面板在根路径可被扫到，建议设置隐藏路径"
     fi
     if [ -f "$APP_DIR/4gtv_admin_key.txt" ]; then
@@ -182,7 +259,6 @@ cmd_install() {
     step "初始设置（直接回车用默认值）"
     local port path
     local defport; defport="$(rand_port)"
-    # 若 env 已有自定义端口则沿用，否则给随机默认
     [ -f "$ENV_FILE" ] && [ -n "${PORT:-}" ] && defport="$PORT"
     read -r -p "监听端口 [回车=${defport}]: " port
     port="${port:-$defport}"
@@ -199,18 +275,17 @@ cmd_install() {
     BASE_PATH="$path"
     write_env
 
-    if has_systemd; then
-        write_service
-        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
-        systemctl restart "$SERVICE_NAME"
+    if has_systemd || has_openrc; then
+        svc_write_and_enable
+        svc_do restart >/dev/null 2>&1
         sleep 1
-        if systemctl is-active --quiet "$SERVICE_NAME"; then
+        if svc_active; then
             info "服务已启动"
         else
-            warn "服务未起来，请 journalctl -u $SERVICE_NAME -n 50 查看日志"
+            warn "服务未起来，请检查输出"
         fi
     else
-        warn "无 systemd，请手动前台运行：PORT=$PORT BASE_PATH=$BASE_PATH $BIN"
+        warn "系统既无 systemd 也无 OpenRC，请手动前台运行：PORT=$PORT BASE_PATH=$BASE_PATH $BIN"
     fi
 
     echo
@@ -226,7 +301,7 @@ cmd_set_port() {
     local p; read -r -p "新端口: " p
     [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ] || { err "端口无效"; return 1; }
     PORT="$p"; write_env
-    has_systemd && systemctl restart "$SERVICE_NAME"
+    svc_managed && svc_do restart
     info "已更新"; show_url
 }
 
@@ -245,7 +320,7 @@ cmd_set_path() {
         *) return 1 ;;
     esac
     BASE_PATH="$path"; write_env
-    has_systemd && systemctl restart "$SERVICE_NAME"
+    svc_managed && svc_do restart
     info "已更新"; show_url
 }
 
@@ -256,6 +331,11 @@ cmd_uninstall() {
         systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
         rm -f "$SERVICE_FILE"; systemctl daemon-reload
         info "服务已移除"
+    elif has_openrc && [ -f "$OPENRC_FILE" ]; then
+        rc-service "$SERVICE_NAME" stop 2>/dev/null || true
+        rc-update del "$SERVICE_NAME" default >/dev/null 2>&1 || true
+        rm -f "$OPENRC_FILE"
+        info "服务已移除"
     fi
     read -r -p "连同 $APP_DIR 一起删掉? [y/N] " c
     if [[ "${c:-N}" =~ ^[Yy]$ ]]; then
@@ -263,6 +343,10 @@ cmd_uninstall() {
     else
         warn "已保留 $APP_DIR"
     fi
+}
+
+cmd_log() {
+    warn "系统层控制台日志已关，请直接查阅 Rust 程序自带生成的日志文件"
 }
 
 main_menu() {
@@ -273,7 +357,7 @@ main_menu() {
         echo -e "        4GTV 安装 · 管理   ${DIM}v${VERSION}${NC}"
         echo -e "${BLU}=============================================${NC}"
         if [ -x "$BIN" ]; then
-            if has_systemd && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            if svc_managed && svc_active; then
                 echo -e "  状态: ${GRN}● 运行中${NC}"
             else
                 echo -e "  状态: ${YEL}○ 已安装${NC}"
@@ -285,7 +369,7 @@ main_menu() {
         echo -e "${BLU}---------------------------------------------${NC}"
         if [ -x "$BIN" ]; then
             echo "  1) 更新二进制   2) 查看地址"
-            echo "  3) 启动  4) 停止  5) 重启  6) 日志"
+            echo "  3) 启动  4) 停止  5) 重启  6) 日志说明"
             echo "  7) 改端口  8) 改隐藏路径"
             echo -e "  u) ${RED}卸载${NC}"
         else
@@ -297,10 +381,10 @@ main_menu() {
         case "$opt" in
             1) cmd_install; read -r -p "回车继续..." _ ;;
             2) show_url; read -r -p "回车继续..." _ ;;
-            3) need_root; systemctl start "$SERVICE_NAME"; info "已启动" ;;
-            4) need_root; systemctl stop "$SERVICE_NAME"; info "已停止" ;;
-            5) need_root; systemctl restart "$SERVICE_NAME"; info "已重启" ;;
-            6) journalctl -u "$SERVICE_NAME" -n 80 -f --no-pager ;;
+            3) need_root; svc_do start; info "已启动" ;;
+            4) need_root; svc_do stop; info "已停止" ;;
+            5) need_root; svc_do restart; info "已重启" ;;
+            6) cmd_log; read -r -p "回车继续..." _ ;;
             7) cmd_set_port; read -r -p "回车继续..." _ ;;
             8) cmd_set_path; read -r -p "回车继续..." _ ;;
             u|U) cmd_uninstall; read -r -p "回车继续..." _ ;;
@@ -314,8 +398,8 @@ case "${1:-}" in
     ""|menu) main_menu ;;
     install) shift; cmd_install "$@" ;;
     url) show_url ;;
-    port) shift; [ -n "${1:-}" ] && { need_root; load_env; PORT="$1"; write_env; has_systemd && systemctl restart "$SERVICE_NAME"; show_url; } || cmd_set_port ;;
-    path) shift; [ -n "${1:-}" ] && { need_root; load_env; BASE_PATH="$1"; [ "$BASE_PATH" = "off" ] && BASE_PATH=""; write_env; has_systemd && systemctl restart "$SERVICE_NAME"; show_url; } || cmd_set_path ;;
+    port) shift; [ -n "${1:-}" ] && { need_root; load_env; PORT="$1"; write_env; svc_managed && svc_do restart; show_url; } || cmd_set_port ;;
+    path) shift; [ -n "${1:-}" ] && { need_root; load_env; BASE_PATH="$1"; [ "$BASE_PATH" = "off" ] && BASE_PATH=""; write_env; svc_managed && svc_do restart; show_url; } || cmd_set_path ;;
     uninstall) cmd_uninstall ;;
     -h|--help) echo "用法: $0 [install|url|port|path|uninstall]"; exit 0 ;;
     *) err "未知命令: $1"; exit 1 ;;
